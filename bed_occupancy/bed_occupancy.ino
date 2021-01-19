@@ -288,6 +288,9 @@ void loop()
 void receive(const MyMessage &message)
 {
   Serial.println("receive ");
+  if (message.isAck()) {
+     Serial.println("This is an ack from gateway");
+  }
 
   for (int i = 0; i < NUMBER_OF_SENSORS; i++)
   {

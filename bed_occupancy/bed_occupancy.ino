@@ -23,6 +23,7 @@
 //#define MY_DEBUG
 #define MY_RADIO_NRF24
 #define MY_NODE_ID 5
+#define OCCUPANCY_TRESHOLD 20
 //#include <MyConfig.h>
 #include <MySensors.h>
 
@@ -62,8 +63,8 @@ Sensor sensors[NUMBER_OF_SENSORS] = {
      0,
      0.0},
     {2,
-     S_BINARY,
-     V_STATUS,
+     S_LOCK,
+     V_LOCK_STATUS,
      "Belegt links",
      false,
      "",
@@ -89,8 +90,8 @@ Sensor sensors[NUMBER_OF_SENSORS] = {
      0,
      0.0},
     {5,
-     S_BINARY,
-     V_STATUS,
+     S_LOCK,
+     V_LOCK_STATUS,
      "Belegt rechts",
      false,
      "",
@@ -111,31 +112,51 @@ Sensor sensors[NUMBER_OF_SENSORS] = {
 MyMessage msg;
 
 //pins:
-const int HX711_dout = 3; //mcu > HX711 dout pin
-const int HX711_sck = 2;  //mcu > HX711 sck pin
+const int HX711_dout_left = 4;  //mcu > HX711 dout pin
+const int HX711_sck_left = 5;   //mcu > HX711 sck pin
+const int HX711_dout_right = 6; //mcu > HX711 dout pin
+const int HX711_sck_right = 7;  //mcu > HX711 sck pin
 
 //HX711 constructor:
-HX711_ADC LoadCell(HX711_dout, HX711_sck);
+HX711_ADC LoadCellLeft(HX711_dout_left, HX711_sck_left);
+HX711_ADC LoadCellRight(HX711_dout_right, HX711_sck_right);
 
 const int calVal_eepromAdress = 0;
-unsigned long t = 0;
-volatile boolean newDataReady;
+unsigned long tLeft = 0;
+unsigned long tRight = 0;
+volatile boolean newDataReadyLeft;
+volatile boolean newDataReadyRight;
+float oldWeightLoadLeft = 0.0;
+float oldWeightLoadRight = 0.0;
+float weightLoadLeft = 0.0;
+float weightLoadRight = 0.0;
 
 void before()
 {
-  Serial.begin(57600);
+  /* Serial.begin(115200); */
   delay(10);
   Serial.println("Starting...");
 
-  LoadCell.begin();
+  LoadCellLeft.begin();
+  LoadCellRight.begin();
+
+  unsigned long stabilizingtime = 2000; // preciscion right after power-up can be improved by adding a few seconds of stabilizing time
+  boolean _tare = true;                 //set this to false if you don't want tare to be performed in the next step
+  LoadCellLeft.start(stabilizingtime, _tare);
+  LoadCellRight.start(stabilizingtime, _tare);
+  checkLoadCellTareTimeout(LoadCellLeft);
+  checkLoadCellTareTimeout(LoadCellRight);
+  attachInterrupt(digitalPinToInterrupt(HX711_dout_left), dataReadyIsrLeft, FALLING);
+  // attachInterrupt(digitalPinToInterrupt(HX711_dout_right), dataReadyIsrRight, FALLING);
+}
+
+void checkLoadCellTareTimeout(HX711_ADC loadCell)
+{
   float calibrationValue;   // calibration value (see example file "Calibration.ino")
   calibrationValue = 696.0; // uncomment this if you want to set the calibration value in the sketch
   //EEPROM.get(calVal_eepromAdress, calibrationValue); // uncomment this if you want to fetch the calibration value from eeprom
 
-  unsigned long stabilizingtime = 2000; // preciscion right after power-up can be improved by adding a few seconds of stabilizing time
-  boolean _tare = true;                 //set this to false if you don't want tare to be performed in the next step
-  LoadCell.start(stabilizingtime, _tare);
-  if (LoadCell.getTareTimeoutFlag())
+  if (loadCell.getTareTimeoutFlag())
   {
     Serial.println("Timeout, check MCU>HX711 wiring and pin designations");
     while (1)
@@ -143,7 +164,7 @@ void before()
   }
   else
   {
-    LoadCell.setCalFactor(calibrationValue); // set calibration value (float)
+    loadCell.setCalFactor(calibrationValue); // set calibration value (float)
     Serial.println("Startup is complete");
   }
 }
@@ -168,50 +189,90 @@ void presentation()
 }
 
 //interrupt routine:
-void dataReadyISR()
+void dataReadyIsrLeft()
 {
-  if (LoadCell.update())
+  if (LoadCellLeft.update())
   {
-    newDataReady = 1;
+    newDataReadyLeft = 1;
+  }
+}
+void dataReadyIsrRight()
+{
+  if (LoadCellRight.update())
+  {
+    newDataReadyRight = 1;
   }
 }
 
 void loop()
 {
+  LoadCellLeft.update();
+  LoadCellRight.update();
+  Serial.println(LoadCellLeft.getData());
+  Serial.println(LoadCellRight.getData());
+  Serial.println("Loop");
   wait(1000);
+  const int serialPrintInterval = 0; //increase value to slow down serial print activity
+
+  // get smoothed value from the dataset:
+  if (newDataReadyLeft)
+  {
+    Serial.print("test");
+    if (millis() > tLeft + serialPrintInterval)
+    {
+      weightLoadLeft = LoadCellLeft.getData();
+      newDataReadyLeft = 0;
+      Serial.print("LoadCellLeft output val: ");
+      Serial.print(weightLoadLeft);
+      tLeft = millis();
+    }
+  }
+  if (newDataReadyRight)
+  {
+    if (millis() > tRight + serialPrintInterval)
+    {
+      weightLoadRight = LoadCellRight.getData();
+      newDataReadyRight = 0;
+      Serial.print("LoadCellRight output val: ");
+      Serial.print(weightLoadRight);
+      tRight = millis();
+    }
+  }
 
   for (int i = 0; i < NUMBER_OF_SENSORS; i++)
   {
     Sensor sensor = sensors[i];
     int variableType = sensor.variableType;
     int id = sensor.childId;
+    msg.setType(variableType).setSensor(id);
+
     if (sensor.initValueReceived == false)
     {
       Serial.print(i);
       Serial.println(" sending init: ");
       if (id == 0 && variableType == V_WEIGHT)
       {
-        float value = 0.0;
-        msg.setType(variableType).setSensor(id).set(value, 2);
+        float value = weightLoadLeft;
+        msg.set(value, 2);
         sensors[i].floatValue = value;
       }
       else if (id == 3 && variableType == V_WEIGHT)
       {
-        float value = 0.0;
-        msg.setType(variableType).setSensor(id).set(value, 2);
+        float value = weightLoadRight;
+        msg.set(value, 2);
         sensors[i].floatValue = value;
       }
-      else if (variableType == V_TRIPPED || variableType == V_STATUS)
+      else if (variableType == V_TRIPPED || variableType == V_STATUS || variableType == V_LOCK_STATUS)
       {
         bool value = false;
-        msg.setType(variableType).setSensor(id).set(value);
+        msg.set(value);
         sensors[i].boolValue = value;
       }
       else
       {
         Serial.println("other");
         int val = loadState(id);
-        msg.setType(variableType).setSensor(id).set(val);
+        msg.set(val);
         sensors[i].intValue = val;
       }
 
@@ -223,74 +284,112 @@ void loop()
     {
       switch (i)
       {
-      case 4: //"waterflow"
+      case 0: // weight left
       {
-        /* float waterflow = getWaterFlow();
-        float oldWaterflow = sensor.floatValue;
-        if (waterflow >= 0 && waterflow != oldWaterflow)
+        float oldValue = sensor.floatValue;
+        float newValue = weightLoadLeft;
+        if (newValue != oldValue)
         {
-          //ASerial.println("sending message '" + String(waterflow) + "' for Sensor '" + String(i) + "'");
-          msg.setType(variableType).setSensor(id).set(waterflow, 2);
+          msg.set(newValue, 2);
           send(msg);
-          saveState(id, waterflow);
-          sensors[i].floatValue = waterflow;
-        } */
+          sensors[i].floatValue = newValue;
+        }
       }
       break;
-      case 7: //"cooling state"
+      case 1: // motion left
       {
-       /*  float oldstate = sensors[7].boolValue;
-        if (isCooling != oldstate)
+        bool oldValue = sensor.boolValue;
+        bool newValue = oldWeightLoadLeft != weightLoadLeft;
+        if (newValue != oldValue)
         {
-          //ASerial.println("sending message '" + String(isCooling) + "' for Sensor '" + String(i) + "'");
-          msg.setType(variableType).setSensor(id).set(isCooling);
+          msg.set(newValue);
           send(msg);
-          saveState(id, isCooling);
-          sensors[i].boolValue = isCooling;
-        } */
+          sensors[i].boolValue = newValue;
+        }
+      }
+      break;
+      case 2: // occupancy left
+      {
+        bool oldValue = sensor.boolValue;
+        bool newValue = weightLoadLeft > OCCUPANCY_TRESHOLD;
+        if (newValue != oldValue)
+        {
+          msg.set(newValue);
+          send(msg);
+          sensors[i].boolValue = newValue;
+        }
+      }
+      break;
+      case 3: // weight right
+      {
+        float oldValue = sensor.floatValue;
+        float newValue = weightLoadRight;
+        if (newValue != oldValue)
+        {
+          msg.set(newValue, 2);
+          send(msg);
+          sensors[i].floatValue = newValue;
+        }
+      }
+      break;
+      case 4: // motion left
+      {
+        bool oldValue = sensor.boolValue;
+        bool newValue = oldWeightLoadRight != weightLoadRight;
+        if (newValue != oldValue)
+        {
+          msg.set(newValue);
+          send(msg);
+          sensors[i].boolValue = newValue;
+        }
+      }
+      break;
+      case 5: // occupancy left
+      {
+        bool oldValue = sensor.boolValue;
+        bool newValue = weightLoadRight > OCCUPANCY_TRESHOLD;
+        if (newValue != oldValue)
+        {
+          msg.set(newValue);
+          send(msg);
+          sensors[i].boolValue = newValue;
+        }
+      }
+      break;
+      case 6: // tare
+      {
+        bool value = sensor.boolValue;
+        if (value == true)
+        {
+          LoadCellLeft.tare();
+          LoadCellRight.tare();
+
+          //check if last tare operation is complete
+          if (LoadCellLeft.getTareStatus() == true && LoadCellRight.getTareStatus() == true)
+          {
+            bool value = false;
+            msg.set(value);
+            sensors[i].boolValue = value;
+            send(msg);
+            Serial.println("Tare complete");
+          }
+        }
       }
       break;
       }
     }
   }
-
-  const int serialPrintInterval = 1000; //increase value to slow down serial print activity
-
-  // get smoothed value from the dataset:
-  if (newDataReady)
-  {
-    if (millis() > t + serialPrintInterval)
-    {
-      float i = LoadCell.getData();
-      newDataReady = 0;
-      Serial.print("Load_cell output val: ");
-      Serial.print(i);
-      //Serial.print("  ");
-      //Serial.println(millis() - t);
-      t = millis();
-    }
-  }
-
-  // receive command from serial terminal, send 't' to initiate tare operation:
-  if (Serial.available() > 0)
-  {
-    char inByte = Serial.read();
-    if (inByte == 't')
-      LoadCell.tareNoDelay();
-  }
-
-  //check if last tare operation is complete
-  if (LoadCell.getTareStatus() == true)
-  {
-    Serial.println("Tare complete");
-  }
+  oldWeightLoadLeft = weightLoadLeft;
+  oldWeightLoadRight = weightLoadRight;
 }
+
 void receive(const MyMessage &message)
 {
   Serial.println("receive ");
-  if (message.isAck()) {
-     Serial.println("This is an ack from gateway");
-  }
+  /*  if (message.isAck())
+  {
+    Serial.println("This is an ack from gateway");
+  } */
 
   for (int i = 0; i < NUMBER_OF_SENSORS; i++)
   {
@@ -308,7 +407,7 @@ void receive(const MyMessage &message)
         {
           sensors[i].initValueReceived = true;
           Serial.print("initialValueReceived for Sensor ");
-          //Serial.println(String(id));
+          Serial.println(String(id));
         }
         switch (variableType)
         {
@@ -324,6 +423,7 @@ void receive(const MyMessage &message)
         break;
         case V_STATUS:
         case V_TRIPPED:
+        case V_LOCK_STATUS:
         {
           bool boolValue = message.getBool();
           saveState(id, boolValue);

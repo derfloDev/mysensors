@@ -63,8 +63,8 @@ Sensor sensors[NUMBER_OF_SENSORS] = {
      0,
      0.0},
     {2,
-     S_LOCK,
-     V_LOCK_STATUS,
+     S_MOTION,
+     V_TRIPPED,
      "Belegt links",
      false,
      "",
@@ -90,8 +90,8 @@ Sensor sensors[NUMBER_OF_SENSORS] = {
      0,
      0.0},
     {5,
-     S_LOCK,
-     V_LOCK_STATUS,
+     S_MOTION,
+     V_TRIPPED,
      "Belegt rechts",
      false,
      "",
@@ -112,28 +112,26 @@ Sensor sensors[NUMBER_OF_SENSORS] = {
 MyMessage msg;
 
 //pins:
-const int HX711_dout_left = 4;  //mcu > HX711 dout pin
-const int HX711_sck_left = 5;   //mcu > HX711 sck pin
-const int HX711_dout_right = 6; //mcu > HX711 dout pin
-const int HX711_sck_right = 7;  //mcu > HX711 sck pin
+const int HX711_dout_left = 2;  //mcu > HX711 dout pin
+const int HX711_sck_left = 4;   //mcu > HX711 sck pin
+const int HX711_dout_right = 3; //mcu > HX711 dout pin
+const int HX711_sck_right = 5;  //mcu > HX711 sck pin
 
 //HX711 constructor:
 HX711_ADC LoadCellLeft(HX711_dout_left, HX711_sck_left);
 HX711_ADC LoadCellRight(HX711_dout_right, HX711_sck_right);
 
 const int calVal_eepromAdress = 0;
-unsigned long tLeft = 0;
-unsigned long tRight = 0;
 volatile boolean newDataReadyLeft;
 volatile boolean newDataReadyRight;
 float oldWeightLoadLeft = 0.0;
 float oldWeightLoadRight = 0.0;
 float weightLoadLeft = 0.0;
 float weightLoadRight = 0.0;
+boolean taring = false;
 
 void before()
 {
-  /* Serial.begin(115200); */
   delay(10);
   Serial.println("Starting...");
 
@@ -144,18 +142,17 @@ void before()
   boolean _tare = true;                 //set this to false if you don't want tare to be performed in the next step
   LoadCellLeft.start(stabilizingtime, _tare);
   LoadCellRight.start(stabilizingtime, _tare);
-  checkLoadCellTareTimeout(LoadCellLeft);
-  checkLoadCellTareTimeout(LoadCellRight);
+  //float calibrationValue; // calibration value (see example file "Calibration.ino")
+  //calibrationValue = 350; //696.0; // uncomment this if you want to set the calibration value in the sketch
+  //EEPROM.get(calVal_eepromAdress, calibrationValue); // uncomment this if you want to fetch the calibration value from eeprom
+  checkLoadCellTareTimeout(LoadCellLeft, 49277.00);
+  checkLoadCellTareTimeout(LoadCellRight, 46731.49);
   attachInterrupt(digitalPinToInterrupt(HX711_dout_left), dataReadyIsrLeft, FALLING);
-  // attachInterrupt(digitalPinToInterrupt(HX711_dout_right), dataReadyIsrRight, FALLING);
+  attachInterrupt(digitalPinToInterrupt(HX711_dout_right), dataReadyIsrRight, FALLING);
 }
 
-void checkLoadCellTareTimeout(HX711_ADC loadCell)
+void checkLoadCellTareTimeout(HX711_ADC &loadCell, float calibrationValue)
 {
-  float calibrationValue;   // calibration value (see example file "Calibration.ino")
-  calibrationValue = 696.0; // uncomment this if you want to set the calibration value in the sketch
-  //EEPROM.get(calVal_eepromAdress, calibrationValue); // uncomment this if you want to fetch the calibration value from eeprom
-
   if (loadCell.getTareTimeoutFlag())
   {
     Serial.println("Timeout, check MCU>HX711 wiring and pin designations");
@@ -188,55 +185,56 @@ void presentation()
   Serial.println("presentation end");
 }
 
-//interrupt routine:
+void addValue(float a[])
+{
+  byte arrayLen = sizeof(a) / sizeof(a[0]);
+  Serial.println(arrayLen);
+  for (byte i = arrayLen - 1; i > 0; i--)
+  {
+    a[i] = a[i - 1];
+  }
+}
+
+//interrupt routines:
 void dataReadyIsrLeft()
 {
-  if (LoadCellLeft.update())
+  if (taring == false)
   {
-    newDataReadyLeft = 1;
+    if (LoadCellLeft.update())
+    {
+      newDataReadyLeft = 1;
+    }
   }
 }
 void dataReadyIsrRight()
 {
-  if (LoadCellRight.update())
+  if (taring == false)
   {
-    newDataReadyRight = 1;
+    if (LoadCellRight.update())
+    {
+      newDataReadyRight = 1;
+    }
   }
 }
 
 void loop()
 {
-  LoadCellLeft.update();
-  LoadCellRight.update();
-  Serial.println(LoadCellLeft.getData());
-  Serial.println(LoadCellRight.getData());
-  Serial.println("Loop");
   wait(1000);
-  const int serialPrintInterval = 0; //increase value to slow down serial print activity
 
   // get smoothed value from the dataset:
   if (newDataReadyLeft)
   {
-    Serial.print("test");
-    if (millis() > tLeft + serialPrintInterval)
-    {
-      weightLoadLeft = LoadCellLeft.getData();
-      newDataReadyLeft = 0;
-      Serial.print("LoadCellLeft output val: ");
-      Serial.print(weightLoadLeft);
-      tLeft = millis();
-    }
+    weightLoadLeft = round(LoadCellLeft.getData());
+    newDataReadyLeft = 0;
+    Serial.print("LoadCellLeft output val: ");
+    Serial.println(weightLoadLeft);
   }
   if (newDataReadyRight)
   {
-    if (millis() > tRight + serialPrintInterval)
-    {
-      weightLoadRight = LoadCellRight.getData();
-      newDataReadyRight = 0;
-      Serial.print("LoadCellRight output val: ");
-      Serial.print(weightLoadRight);
-      tRight = millis();
-    }
+    weightLoadRight = round(LoadCellRight.getData());
+    newDataReadyRight = 0;
+    Serial.print("LoadCellRight output val: ");
+    Serial.println(weightLoadRight);
   }
 
   for (int i = 0; i < NUMBER_OF_SENSORS; i++)
@@ -262,7 +260,7 @@ void loop()
         msg.set(value, 2);
         sensors[i].floatValue = value;
       }
-      else if (variableType == V_TRIPPED || variableType == V_STATUS || variableType == V_LOCK_STATUS)
+      else if (variableType == V_TRIPPED || variableType == V_STATUS)
       {
         bool value = false;
         msg.set(value);
@@ -361,6 +359,8 @@ void loop()
         bool value = sensor.boolValue;
         if (value == true)
         {
+          taring = true;
+          Serial.println("Tare start");
           LoadCellLeft.tare();
           LoadCellRight.tare();
 
@@ -372,6 +372,7 @@ void loop()
             sensors[i].boolValue = value;
             send(msg);
             Serial.println("Tare complete");
+            taring = false;
           }
         }
       }

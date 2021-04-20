@@ -145,8 +145,8 @@ void before()
   //float calibrationValue; // calibration value (see example file "Calibration.ino")
   //calibrationValue = 350; //696.0; // uncomment this if you want to set the calibration value in the sketch
   //EEPROM.get(calVal_eepromAdress, calibrationValue); // uncomment this if you want to fetch the calibration value from eeprom
-  checkLoadCellTareTimeout(LoadCellLeft, 49277.00);
-  checkLoadCellTareTimeout(LoadCellRight, 46731.49);
+  checkLoadCellTareTimeout(LoadCellLeft, -30277.00);
+  checkLoadCellTareTimeout(LoadCellRight, -29731.49);
   attachInterrupt(digitalPinToInterrupt(HX711_dout_left), dataReadyIsrLeft, FALLING);
   attachInterrupt(digitalPinToInterrupt(HX711_dout_right), dataReadyIsrRight, FALLING);
 }
